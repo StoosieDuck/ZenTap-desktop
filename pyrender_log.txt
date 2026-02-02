@@ -1,0 +1,15 @@
+Traceback (most recent call last):
+  File "C:\Users\liams\OneDrive\Documents\Python\ZenTap-windows\test_pyrender_crash.py", line 13, in <module>
+    r = pyrender.OffscreenRenderer(viewport_width=400, viewport_height=200)
+  File "C:\Users\liams\AppData\Local\Programs\Python\Python314\Lib\site-packages\pyrender\offscreen.py", line 31, in __init__
+    self._create()
+    ~~~~~~~~~~~~^^
+  File "C:\Users\liams\AppData\Local\Programs\Python\Python314\Lib\site-packages\pyrender\offscreen.py", line 146, in _create
+    raise ValueError('Unsupported PyOpenGL platform: {}'.format(
+        os.environ['PYOPENGL_PLATFORM']
+    ))
+ValueError: Unsupported PyOpenGL platform: pyglet
+Setting env vars...
+Importing pyrender...
+Pyrender imported.
+Creating OffscreenRenderer...
