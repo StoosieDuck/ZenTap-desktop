@@ -124,6 +124,77 @@ def get_file_icon(path):
     except: pass
     return None
 
+def get_website_favicon(keyword):
+    """Fetch favicon for a website keyword from Google's API or local folder."""
+    import urllib.request
+    import io
+    
+    # Clean keyword - extract domain if it looks like a URL
+    domain = keyword.lower().strip()
+    if not '.' in domain:
+        domain = f"{domain}.com"  # Assume .com for simple keywords
+    
+    img = None
+    
+    # Try local folder first
+    local_path = os.path.join(os.path.dirname(__file__), "website_icons", f"{keyword.lower()}.png")
+    if os.path.exists(local_path):
+        try:
+            img = Image.open(local_path).resize((48, 48), Image.Resampling.LANCZOS)
+        except: pass
+    
+    # Fetch from Google Favicon API
+    if img is None:
+        try:
+            url = f"https://www.google.com/s2/favicons?domain={domain}&sz=128"
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=5) as response:
+                img_data = response.read()
+                img = Image.open(io.BytesIO(img_data))
+                # Convert to RGBA if needed
+                if img.mode != 'RGBA':
+                    img = img.convert('RGBA')
+                img = img.resize((48, 48), Image.Resampling.LANCZOS)
+        except Exception as e:
+            print(f"Favicon fetch failed for {keyword}: {e}")
+    
+    # Round the corners if we have an image
+    if img:
+        img = round_icon_corners(img)
+    
+    return img
+
+def round_icon_corners(img, radius_percent=0.24):
+    """Round the corners of an image with supersampling for smooth edges."""
+    from PIL import ImageDraw
+    
+    # Ensure RGBA
+    if img.mode != 'RGBA':
+        img = img.convert('RGBA')
+    
+    w, h = img.size
+    
+    # Supersampling: work at 4x resolution for smooth anti-aliased corners
+    scale = 4
+    big_w, big_h = w * scale, h * scale
+    radius = int(min(big_w, big_h) * radius_percent)
+    
+    # Upscale image
+    big_img = img.resize((big_w, big_h), Image.Resampling.LANCZOS)
+    
+    # Create high-res mask with rounded corners
+    mask = Image.new('L', (big_w, big_h), 0)
+    draw = ImageDraw.Draw(mask)
+    draw.rounded_rectangle((0, 0, big_w, big_h), radius, fill=255)
+    
+    # Apply mask at high resolution
+    output = Image.new('RGBA', (big_w, big_h), (0, 0, 0, 0))
+    output.paste(big_img, mask=mask)
+    
+    # Downscale back to original size with high quality
+    return output.resize((w, h), Image.Resampling.LANCZOS)
+
+
 # --- UI COMPONENT: INTERACTIVE 3D CARD ---
 # --- UI COMPONENT: INTERACTIVE 3D CARD ---
 # --- UI COMPONENT: INTERACTIVE 3D CARD ---
@@ -553,7 +624,7 @@ class WelcomeScreen(tk.Frame):
         
         # Text
         self.canvas.create_text(self.cx, self.cy + 150, text="ZEN TAP", font=("Roboto Medium", 32), fill="white", tags="text")
-        self.canvas.create_text(self.cx, self.cy + 190, text="-- FOCUS • TAP • ACHIEVE --", font=("Roboto", 10), fill="gray", tags="text")
+        self.canvas.create_text(self.cx, self.cy + 190, text="— FOCUS • TAP • ACHIEVE —", font=("Roboto", 10), fill="gray", tags="text")
         self.canvas.create_text(self.cx, self.cy + 220, text="1.0.1 ZEN OS", font=("Roboto", 8), fill="#444", tags="text")
         
         # Button
@@ -625,8 +696,8 @@ class ZenTapApp:
         self.web_keywords = []    
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
-        # Show Main Dashboard (SKIP WELCOME)
-        self.init_dashboard()
+        # Show Welcome Screen first
+        self.welcome_screen = WelcomeScreen(self.root, self.init_dashboard)
         
     def load_resources(self):
         self.photo_icon = None
@@ -816,8 +887,24 @@ class ZenTapApp:
         
     def update_slots(self):
         self.slot_canvas.delete("all")
-        # Sort by timestamp (default 0 if missing)
-        selected = sorted([a for a in self.all_apps if a['checked']], key=lambda x: x.get('selection_ts', 0))
+        # Sort apps by timestamp (default 0 if missing)
+        selected_apps = sorted([a for a in self.all_apps if a['checked']], key=lambda x: x.get('selection_ts', 0))
+        
+        # Convert web_keywords (strings) to dicts with icons for unified handling
+        selected_websites = []
+        for item in self.web_keywords:
+            if isinstance(item, dict):
+                selected_websites.append(item)
+            else:
+                # Legacy string format - convert to dict
+                selected_websites.append({'keyword': item, 'icon': None, 'icon_pil': None})
+        
+        # Combine: apps first, then websites
+        combined = []
+        for app in selected_apps:
+            combined.append({'type': 'app', 'name': app.get('name', '?'), 'icon': app.get('icon'), 'icon_pil': app.get('icon_pil')})
+        for web in selected_websites:
+            combined.append({'type': 'web', 'name': web.get('keyword', '?'), 'icon': web.get('icon'), 'icon_pil': web.get('icon_pil')})
         
         # Responsive sizing
         canvas_w = self.slot_canvas.winfo_width()
@@ -887,9 +974,9 @@ class ZenTapApp:
             is_overflow = False
             overflow_count = 0
             
-            if len(selected) > 8 and i == 7:
+            if len(combined) > 8 and i == 7:
                 is_overflow = True
-                overflow_count = len(selected) - 7
+                overflow_count = len(combined) - 7
                 bg_col = "#ccc" 
                 out_col = "black" 
             
@@ -906,26 +993,29 @@ class ZenTapApp:
             
             if is_overflow:
                 self.slot_canvas.create_text(x, y, text=f"+{overflow_count}", font=("Roboto", 18, "bold"), fill="#333")
-            elif i < len(selected):
-                 # Normal app slot
-                 idx = i
-                 app = selected[idx]
+            elif i < len(combined):
+                 # Normal slot (app or website)
+                 item = combined[i]
                  
                  # Dynamic Icon Resizing
-                 if 'icon_pil' in app and app['icon_pil']:
+                 if item.get('icon_pil'):
                      try:
                          # Resize to fit slot (minus padding) - made bigger
                          s = int(slot_size * 0.85)
-                         resized = app['icon_pil'].resize((s, s), Image.Resampling.LANCZOS)
+                         resized = item['icon_pil'].resize((s, s), Image.Resampling.LANCZOS)
                          new_icon = ImageTk.PhotoImage(resized)
                          self.current_slot_icons.append(new_icon) # Keep Ref
                          self.slot_canvas.create_image(x, y, image=new_icon)
                      except:
                          pass
-                 elif app['icon']:
-                      self.slot_canvas.create_image(x, y, image=app['icon'])
+                 elif item.get('icon'):
+                      self.slot_canvas.create_image(x, y, image=item['icon'])
                  else:
-                      self.slot_canvas.create_text(x, y, text=app['name'][0], font=("Roboto", 14, "bold"), fill="#666")
+                      # Missing icon fallback - use missing_icon for websites, letter for apps
+                      if item.get('type') == 'web' and self.missing_icon_img:
+                          self.slot_canvas.create_image(x, y, image=self.missing_icon_img)
+                      else:
+                          self.slot_canvas.create_text(x, y, text=item['name'][0].upper(), font=("Roboto", 14, "bold"), fill="#666")
     
 
             
@@ -1027,8 +1117,8 @@ class ZenTapApp:
     def toggle_zen(self):
         if not self.is_active:
             sel = [a for a in self.all_apps if a['checked']]
-            if not sel: 
-                messagebox.showwarning("ZenTap", "Select apps first."); return
+            if not sel and not self.web_keywords: 
+                messagebox.showwarning("ZenTap", "Select apps or add website keywords first."); return
             
             # Check for running apps
             running = []
@@ -1686,8 +1776,14 @@ class ZenTapApp:
             # Block browser tabs by keyword
             if self.web_keywords:
                 try:
-                    for kw in self.web_keywords:
-                        if not kw.strip(): continue
+                    for item in self.web_keywords:
+                        # Handle dict (new) or string (legacy)
+                        if isinstance(item, dict):
+                            kw = item.get('keyword', '')
+                        else:
+                            kw = item
+                            
+                        if not kw or not kw.strip(): continue
                         windows = gw.getWindowsWithTitle(kw)
                         for win in windows:
                             try:
@@ -1796,7 +1892,17 @@ class ManageAppsWindow:
         for w in self.win.winfo_children(): w.destroy()
         self.win.update_idletasks()  # Force immediate refresh
         
-        selected = [a for a in self.apps if a['checked']]
+        selected_apps = [a for a in self.apps if a['checked']]
+        
+        # Prepare websites list
+        selected_websites = []
+        for item in self.web_keywords:
+            if isinstance(item, dict):
+                selected_websites.append({'name': item.get('keyword', '?'), 'icon': item.get('icon'), 'type': 'web'})
+            else:
+                selected_websites.append({'name': item, 'icon': None, 'type': 'web'})
+        
+        total_items = len(selected_apps) + len(selected_websites)
         
         # Header - reduced bottom padding
         h = tk.Frame(self.win, bg="white")
@@ -1818,23 +1924,54 @@ class ManageAppsWindow:
             edit_btn.bind("<Button-1>", lambda e: self.show_selector())
         
         # Subtitle - close to header
-        tk.Label(self.win, text=f"{len(selected)} apps blocked", font=("Roboto", 10), fg="gray", bg="white").pack(anchor="w", padx=20, pady=0)
+        subtitle_text = f"{total_items} items blocked"
+        if len(selected_apps) > 0 and len(selected_websites) > 0:
+            subtitle_text = f"{len(selected_apps)} apps, {len(selected_websites)} sites blocked"
+        
+        tk.Label(self.win, text=subtitle_text, font=("Roboto", 10), fg="gray", bg="white").pack(anchor="w", padx=20, pady=0)
         
         # List
         sf = tk.Frame(self.win, bg="white")
         sf.pack(fill="both", expand=True, padx=20)
         
-        if not selected:
-             tk.Label(sf, text="No apps selected.", font=("Roboto", 12), fg="gray", bg="white").pack(pady=20)
+        if total_items == 0:
+             tk.Label(sf, text="No apps or websites selected.", font=("Roboto", 12), fg="gray", bg="white").pack(pady=20)
         
-        for app in selected:
+        # Combine lists for display
+        combined_list = []
+        for a in selected_apps:
+            combined_list.append({'name': a['name'], 'icon': a['icon'], 'type': 'app'})
+        for w in selected_websites:
+            combined_list.append(w)
+            
+        for item in combined_list:
             row = tk.Frame(sf, bg="white", pady=8)
             row.pack(fill="x")
             
-            if app['icon']:
-                tk.Label(row, image=app['icon'], bg="white").pack(side="left", padx=(0, 15))
+            # Icon
+            if item['icon']:
+                tk.Label(row, image=item['icon'], bg="white").pack(side="left", padx=(0, 15))
+            elif item['type'] == 'web':
+                 # Fallback for website - gray circle with letter
+                 # Create a simple fallback image on the fly
+                 try:
+                     f_img = Image.new('RGBA', (32, 32), (0,0,0,0))
+                     d = ImageDraw.Draw(f_img)
+                     d.ellipse((0,0,32,32), fill="#eee")
+                     # Draw letter
+                     letter = item['name'][0].upper()
+                     # diverse centering hack
+                     d.text((10, 8), letter, fill="#666", font=ImageFont.truetype("arial.ttf", 16) if os.name=='nt' else None)
+                     
+                     photo = ImageTk.PhotoImage(f_img)
+                     item['icon_fallback'] = photo # Keep ref
+                     tk.Label(row, image=photo, bg="white").pack(side="left", padx=(0, 15))
+                 except:
+                     # Absolute fallback
+                     tk.Label(row, text="🌐", font=("Segoe UI Emoji", 16), bg="white").pack(side="left", padx=(0, 10))
             
-            tk.Label(row, text=app['name'], font=("Roboto", 12), bg="white").pack(side="left")
+            # Name - Bold/Medium font
+            tk.Label(row, text=item['name'], font=("Roboto Medium", 12), bg="white").pack(side="left")
             
             # Divider
             tk.Frame(sf, height=1, bg="#eee").pack(fill="x", pady=2)
@@ -1955,8 +2092,7 @@ class ManageAppsWindow:
         if tab == "apps":
             self.show_apps_tab()
         else:
-            # self.show_welcome() # Skip for debugging
-            self.show_main() # Assuming this was intended to replace show_websites_tab()
+            self.show_websites_tab()
     
     def show_apps_tab(self):
         # Note: tab_content is recreated in switch_tab, so no need to destroy children here
@@ -2068,15 +2204,44 @@ class ManageAppsWindow:
     
     def add_keyword(self):
         kw = self.keyword_var.get().strip()
-        if kw and kw not in self.web_keywords:
-            self.web_keywords.append(kw)
-            self.keyword_var.set("")
-            self.refresh_keywords_list()
+        if not kw:
+            return
+        
+        # Check if keyword already exists
+        for item in self.web_keywords:
+            existing_kw = item.get('keyword') if isinstance(item, dict) else item
+            if existing_kw.lower() == kw.lower():
+                return  # Already exists
+        
+        # Create entry with placeholder (no icon yet)
+        entry = {'keyword': kw, 'icon': None, 'icon_pil': None}
+        self.web_keywords.append(entry)
+        self.keyword_var.set("")
+        self.refresh_keywords_list()
+        self.on_update()  # Update the main dock
+        
+        # Fetch favicon in background
+        def fetch_icon():
+            icon_pil = get_website_favicon(kw)
+            if icon_pil:
+                entry['icon_pil'] = icon_pil
+                entry['icon'] = ImageTk.PhotoImage(icon_pil)
+                # Refresh UI on main thread
+                if self.win.winfo_exists():
+                    self.win.after(0, self.refresh_keywords_list)
+                    self.win.after(0, self.on_update)
+        
+        threading.Thread(target=fetch_icon, daemon=True).start()
     
     def remove_keyword(self, kw):
-        if kw in self.web_keywords:
-            self.web_keywords.remove(kw)
-            self.refresh_keywords_list()
+        # Find and remove the entry with matching keyword
+        for item in self.web_keywords[:]:
+            item_kw = item.get('keyword') if isinstance(item, dict) else item
+            if item_kw == kw:
+                self.web_keywords.remove(item)
+                break
+        self.refresh_keywords_list()
+        self.on_update()  # Update the main dock
     
     def refresh_keywords_list(self):
         for w in self.keywords_frame.winfo_children(): w.destroy()
@@ -2086,11 +2251,34 @@ class ManageAppsWindow:
                      font=("Roboto", 11), fg="#999", bg="white").pack(pady=20)
             return
         
-        for kw in self.web_keywords:
+        # Keep icon refs to prevent GC
+        if not hasattr(self, '_kw_icons'): self._kw_icons = []
+        self._kw_icons.clear()
+        
+        for item in self.web_keywords:
+            # Handle both dict and legacy string format
+            if isinstance(item, dict):
+                kw = item.get('keyword', '?')
+                icon_pil = item.get('icon_pil')
+            else:
+                kw = item
+                icon_pil = None
+            
             row = tk.Frame(self.keywords_frame, bg="white")
             row.pack(fill="x", pady=5)
             
-            tk.Label(row, text=f"• {kw}", font=("Roboto", 11), bg="white").pack(side="left")
+            # Icon (if available)
+            if icon_pil:
+                try:
+                    small_icon = icon_pil.resize((24, 24), Image.Resampling.LANCZOS)
+                    photo = ImageTk.PhotoImage(small_icon)
+                    self._kw_icons.append(photo)  # Keep ref
+                    icon_label = tk.Label(row, image=photo, bg="white")
+                    icon_label.pack(side="left", padx=(0, 8))
+                except:
+                    pass
+            
+            tk.Label(row, text=kw, font=("Roboto", 11), bg="white").pack(side="left")
             
             remove_btn = tk.Label(row, text="✕", font=("Roboto", 10), 
                                    fg="#999", bg="white", cursor="hand2")
